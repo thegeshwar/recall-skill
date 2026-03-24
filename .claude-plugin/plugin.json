@@ -1,0 +1,11 @@
+{
+  "name": "recall",
+  "description": "Morning briefing skill for Mac — scans Gmail, iMessage, WhatsApp, git activity, and pushes TODO list to Reminders.",
+  "version": "1.0.0",
+  "author": {
+    "name": "thegeshwar"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/thegeshwar/recall-skill",
+  "keywords": ["morning", "briefing", "email", "reminders", "productivity"]
+}
