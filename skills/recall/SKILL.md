@@ -1,249 +1,187 @@
 ---
 name: recall
-description: "Morning briefing that scans Gmail inboxes, iMessage, WhatsApp, git activity, running services, and Claude session history — then synthesizes a curated daily TODO list pushed to macOS Reminders. Use this skill whenever the user runs /recall, asks for a morning briefing, wants to know what they worked on recently, asks 'what was I doing', 'what do I need to do today', 'catch me up', or wants to start their day. Also triggers for /start-day. Usage: /recall [hours] — optional focus window (default: 24h for comms, 7d for git/sessions)."
+description: "Morning briefing with Gmail (4 accounts), iMessage, WhatsApp, auto-discovered services on BOTH Mac and VPS, 7-day session context from both machines, roadmap sync, smart continue prompts, and TODO list pushed to macOS Reminders. Use this skill whenever the user runs /recall, asks for a morning briefing, wants to know what they worked on recently, asks 'what was I doing', 'what do I need to do today', 'catch me up', or wants to start their day. Also triggers for /start-day. Usage: /recall [hours] — focus window for continue prompts (default: most recent per active project). Always loads 7 days of context."
 user_invocable: true
 ---
 
-# Recall — Mac Morning Briefing
+# Recall — Mac + VPS Morning Briefing
 
-You're giving Thegeshwar his morning briefing. Tell him what needs attention, where he left off, and what to do today.
+You're giving Thegeshwar his morning briefing. Tell him what needs attention across his Mac AND VPS, where he left off, and how to continue.
 
-Keep it clear, focused, and actionable. No jargon. Think of yourself as a personal chief of staff.
+The user is non-technical. Keep it clear, focused, and actionable.
 
-**Timezone: Pacific Time (PST/PDT).** The system may run in UTC. Use `TZ=America/Los_Angeles date` for current time.
-
-**Config file:** Read `~/.claude/recall-config.json` for active projects and preferences. If it doesn't exist, use defaults.
+**Everything must be in Pacific Time (PST/PDT).** Use `TZ=America/Los_Angeles date +%Y-%m-%d` for today's date and `TZ=America/Los_Angeles date` for times.
 
 **Argument handling:**
-- `$ARGUMENTS` may contain a focus window in hours (e.g., `/recall 6`)
-- Parse into `FOCUS_HOURS`. If empty, default to 24h for comms, 7d for git/sessions
-- Comms scanning (email, iMessage, WhatsApp) uses `FOCUS_HOURS` or 24h
-- Git and session history always scan 7 days
+- `$ARGUMENTS` contains an optional focus window in hours (e.g., `/recall 6`)
+- Parse into `FOCUS_HOURS`. If empty or not a number, leave empty (triggers "most recent per active project" mode)
+- Session/git data gathering ALWAYS uses a **7-day window** regardless of the argument
+- The argument only controls which tasks get continue prompts in Phase 5
 
 ---
 
-## Phase 1: Gather (do ALL of these in parallel using subagents)
+## Phase 1: Gather (do ALL in parallel)
 
 ### A. Gmail — All Inboxes
 
-Use the Gmail MCP tools to scan for unread and important emails.
+Use the Google Workspace MCP to scan each account:
 
-For each connected account:
-```
-gmail_search_messages with query: "is:unread newer_than:1d"
-```
+search_gmail_messages(query="is:unread newer_than:1d", user_google_email="thegeshwar@gmail.com", page_size=10)
+search_gmail_messages(query="is:unread newer_than:1d", user_google_email="thegeshwar.sivamoorthy@gmail.com", page_size=10)
+search_gmail_messages(query="is:unread newer_than:1d", user_google_email="thejeshwa@gmail.com", page_size=10)
+search_gmail_messages(query="is:unread newer_than:1d", user_google_email="sivamoorthythegeshwar@gmail.com", page_size=10)
 
-Then for the top 15 most important-looking threads, read them:
-```
-gmail_read_message for each
-```
+Then batch-read the top 15 most important threads using get_gmail_messages_content_batch.
 
-Categorize each email as:
-- **Action Required** — needs a reply, decision, or task from Thegeshwar
-- **FYI** — informational, no action needed
-- **Spam/Promo** — can be ignored
-
-Focus on: anything from real people, calendar invites, bills, legal/immigration docs, client communications, job-related, or project-related. Deprioritize newsletters and marketing.
+Categorize each as: Action Required, FYI, or Skip.
+Focus on: real people, calendar invites, bills, legal/immigration, clients, projects. Skip newsletters.
 
 ### B. iMessage — Recent Conversations
 
-Query the iMessage database directly:
+sqlite3 ~/Library/Messages/chat.db "SELECT h.id as contact, m.text, datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as sent_at, m.is_from_me FROM message m JOIN handle h ON m.handle_id = h.ROWID WHERE m.date > (strftime('%s', 'now', '-1 day') - 978307200) * 1000000000 ORDER BY m.date DESC LIMIT 50;"
 
-```bash
-sqlite3 ~/Library/Messages/chat.db "
-SELECT
-  h.id as contact,
-  m.text,
-  datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as sent_at,
-  m.is_from_me
-FROM message m
-JOIN handle h ON m.handle_id = h.ROWID
-WHERE m.date > (strftime('%s', 'now', '-1 day') - 978307200) * 1000000000
-ORDER BY m.date DESC
-LIMIT 50;
-"
-```
-
-Identify conversations that need a reply (messages from others where Thegeshwar hasn't responded).
+Identify conversations needing a reply (last message is from someone else).
 
 ### C. WhatsApp — Check for Unreads
 
-Open WhatsApp and check for unread indicators:
+Open WhatsApp via osascript, then use accessibility to scan for unread badges. If not logged in, note it and skip.
 
-```bash
-osascript -e 'tell application "WhatsApp" to activate'
-sleep 2
-```
+### D. Mac Session History (7 days)
 
-Then use accessibility to scan for unread badges:
-```bash
-osascript -e '
-tell application "System Events"
-    tell process "WhatsApp"
-        set output to ""
-        set allElems to entire contents of window 1
-        repeat with elem in allElems
-            try
-                set elemDesc to description of elem
-                set elemVal to value of elem
-                if elemDesc is not missing value then
-                    set output to output & elemDesc & " | " & elemVal & return
-                end if
-            end try
-        end repeat
-        return output
-    end tell
-end tell
-'
-```
+Read ~/.claude/history.jsonl, filter to last 7 days, deduplicate by sessionId.
 
-If WhatsApp is not logged in, note that in the briefing and skip.
+### E. Mac Git Activity
 
-### D. Git Activity — Active Projects
+For each project in ~/.claude/recall-config.json active_projects list, check git log --since="7 days ago" and git status.
 
-Read project list from `~/.claude/recall-config.json` (field: `active_projects`), or default to: bhavya-mailer, remotion-project, short-form-video, shivyog-rails.
+### F. Mac Services
 
-For each active project, check recent commits:
+Check docker ps and lsof for common dev ports (3000, 3001, 4000, 5000, 5432, 5678, 8000, 8080).
 
-```bash
-for project in $(cat ~/.claude/recall-config.json 2>/dev/null | python3 -c "import sys,json; print(' '.join(json.load(sys.stdin).get('active_projects',[])))" 2>/dev/null || echo "bhavya-mailer remotion-project short-form-video shivyog-rails"); do
-  dir=~/Projects/$project
-  if [ -d "$dir/.git" ]; then
-    echo "=== $project ==="
-    cd "$dir"
-    git log --oneline --since="7 days ago" --all 2>/dev/null | head -10
-    git status --short 2>/dev/null
-    echo ""
-  fi
-done
-```
+### G. VPS Full Report (via SSH)
 
-### E. Running Services
+SSH into oracle and gather: session history (7 days), service status (systemctl, docker ps), nginx domain discovery, git activity (7 days), disk usage. For each discovered VPS domain, health check with curl.
 
-```bash
-# Docker containers
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null
+### H. Read the Roadmap
 
-# Any dev servers on common ports
-lsof -iTCP -sTCP:LISTEN -P 2>/dev/null | grep -E ":(3000|3001|4000|5000|5432|5678|8000|8080)" | awk '{print $1, $9}'
-```
+gh project item-list 7 --owner thegeshwar --format json --limit 100
 
-### F. Claude Code Session History (7 days)
+### I. Read Existing Reminders (for deduplication)
 
-```bash
-CUTOFF=$(python3 -c "import time; print(int((time.time() - 7*86400) * 1000))")
-cat ~/.claude/history.jsonl | python3 -c "
-import sys, json
-cutoff = ${CUTOFF}
-seen = set()
-for line in sys.stdin:
-    try:
-        entry = json.loads(line.strip())
-        ts = entry.get('timestamp', 0)
-        if ts >= cutoff:
-            sid = entry.get('sessionId','')
-            proj = entry.get('project','')
-            display = entry.get('display','')[:120]
-            if sid and sid not in seen:
-                seen.add(sid)
-                print(json.dumps({'sessionId': sid, 'project': proj, 'display': display, 'timestamp': ts}))
-    except:
-        pass
-"
-```
+Read all uncompleted reminders from "Daily Briefing" list via osascript. Store this list — in Phase 4, do NOT add any task that essentially duplicates an existing uncompleted reminder.
 
-### G. Read Memory
+### J. Read Memory
 
-Read `~/.claude/projects/-Users-thegeshwar/memory/MEMORY.md` and any referenced memory files for ongoing context about projects, user preferences, and active work.
+Read ~/.claude/projects/-Users-thegeshwar/memory/MEMORY.md and referenced files.
 
 ---
 
-## Phase 2: Synthesize
+## Phase 2: Read Sessions (build per-project arcs)
 
-Now that you have all the data, organize it into a briefing. Think about what Thegeshwar actually needs to do today vs. what's just noise.
+Sessions are research material — read them to understand what happened, but don't reproduce them.
 
-### Priority Framework
+Read up to 15 most recent sessions from BOTH Mac and VPS. For each, read head -50 and tail -30 of the session JSONL.
 
-1. **Urgent**: Time-sensitive emails (bills, legal, expiring deadlines), unanswered messages from important contacts, broken services
-2. **Important**: Project-related communications, PRs needing review, active project next steps
-3. **Routine**: FYI emails, general catch-up, low-priority messages
-4. **Skip**: Spam, promotions, automated notifications with no action needed
-
----
-
-## Phase 3: Create TODO List in Reminders
-
-Append today's actionable items to macOS Reminders under a list called "Daily Briefing". Do NOT clear existing items — completed items stay as a record, and uncompleted items from previous days naturally carry forward.
-
-Prefix each new item with today's date so items are easy to identify by day.
-
-```bash
-TODAY=$(TZ=America/Los_Angeles date +"%b %d")
-
-osascript -e '
-tell application "Reminders"
-    -- Create list if it doesnt exist
-    if not (exists list "Daily Briefing") then
-        make new list with properties {name:"Daily Briefing"}
-    end if
-
-    tell list "Daily Briefing"
-        make new reminder with properties {name:"'"${TODAY}"' — TODO_ITEM_HERE", body:"CONTEXT_HERE"}
-    end tell
-end tell
-'
-```
-
-Run one `osascript` call per reminder item, or batch them in a single script. Each reminder should have:
-- **name**: Date prefix + short actionable task (e.g., "Mar 25 — Reply to Bhavya re: mailer deploy")
-- **body**: Context about why and what to say/do
-
-Limit to 10-15 new items max per day. Prioritize ruthlessly.
+Build a per-project arc for EACH active project (Mac and VPS):
+- Timeline: what happened each day over 7 days
+- Trajectory: ramping up, winding down, or stuck?
+- Latest state: what was the user doing in the most recent session?
+- User's intent: what are they trying to achieve?
+- Blockers/frustrations: anything recurring?
 
 ---
 
-## Phase 4: Present the Briefing
+## Phase 3: Update the Roadmap
 
-Format the briefing like this:
+Step 1: Build index of existing items from Phase 1H
+Step 2: Match each session (Mac AND VPS) to existing items by project label. Almost never create new items.
+Step 3: Apply updates (extend dates, change statuses)
+Step 4: Check for duplicates
 
-```
-Good morning! Here's your briefing for [today's date].
-
-## Inbox Summary
-[X unread across Y accounts]
-- [Key emails needing action, grouped by urgency]
-
-## Messages
-### iMessage
-- [Conversations needing reply]
-
-### WhatsApp
-- [Status or unreads]
-
-## Projects
-- [What changed in the last 7 days across active projects]
-- [Any broken services or issues]
-
-## Your TODO for Today
-1. [Most important task]
-2. [Second most important]
-...
-
-These have been added to your Reminders app under "Daily Briefing".
-
-## What You Were Working On
-[Summary of recent Claude sessions — what was being built/fixed/explored]
-```
-
-Keep each section tight. If a section has nothing to report, say so in one line and move on. The whole briefing should be scannable in under 2 minutes.
+Reference Field IDs:
+Project 7, owner thegeshwar, node ID PVT_kwHOAz2d0c4BSmVV
+Status: PVTSSF_lAHOAz2d0c4BSmVVzhAFewY (Todo=f75ad846, In Progress=47fc9ee4, Done=98236657)
+Project: PVTSSF_lAHOAz2d0c4BSmVVzhAFey0
+Type: PVTSSF_lAHOAz2d0c4BSmVVzhAFe0I (task=bc2735cc, service=bb19aa1b, daily-log=1f543262, blocker=47188be2, decision=856bd4a8)
+Start date: PVTF_lAHOAz2d0c4BSmVVzhAFfB0
+End date: PVTF_lAHOAz2d0c4BSmVVzhAFfB8
+Project labels: linkedin-outreach=62cf1c92, jobagent=4bf8cd59, qms-agents=48f0a5fc, qms-leader=bad90081, calldeck=10bc5236, portfolio=c497a712, snapfinance=bc6154b1, remoteflow=db77ab1f, claude-config=6703f40c, other=51edd8be
 
 ---
 
-## Notes
+## Phase 4: Create TODO in Reminders
 
-- If WhatsApp isn't logged in, just note it and move on
-- If Gmail MCP isn't responding, try the search with fewer results
-- If a git repo doesn't exist in ~/Projects/, skip it silently
-- Don't expose full email contents — summarize what matters
-- Existing reminders are preserved — only new items are appended each day
-- Once a week (Sunday), mention how many uncompleted items have piled up and suggest cleanup
+Read existing uncompleted reminders from Phase 1I. Do NOT re-add tasks that already exist (even if worded differently). Only add genuinely NEW actionable items.
+
+Prefix with today's date. Sources: emails needing action, messages needing reply, broken services, project next steps. Max 10-15 NEW items per day.
+
+---
+
+## Phase 5: Present the Briefing
+
+Keep it compact (~60 lines max).
+
+Part 1: Communications (inbox summary, action required emails, iMessage, WhatsApp)
+
+Part 2: VPS Services (auto-discovered dashboard grid with domain, port, project, health check mark or X)
+Domain filtering: When multiple domains share same port, show only primary domain.
+
+Part 3: Mac Services (Docker containers, dev servers)
+
+Part 4: Active Tasks with Smart Continue Prompts
+
+Determine which tasks get continue prompts:
+- If FOCUS_HOURS set: only tasks with activity in last FOCUS_HOURS hours
+- If empty: most recent task per active project within 72 hours
+
+Active project = In Progress on roadmap AND has git/session activity in last 72 hours.
+Stalled projects: In Progress but no activity in 72 hours — one-liner, no continue prompt.
+
+For each active task:
+
+{n}. {Task Name} ({project} — {Mac/VPS})
+> {2-3 sentence summary. Plain language.}
+> To continue:
+> {Smart continue prompt — first person, casual, captures the journey}
+
+Smart Continue Prompt Construction rules:
+1. Use the per-project arc from Phase 2
+2. Identify trajectory (ramping up, stuck, wrapping up)
+3. Write in first person, casually — sound like the user
+4. Include specific technical details (file paths, what was last touched)
+5. Capture emotional context
+6. End with clear next action + "Check the GitHub Project board and update it."
+7. For Mac projects: reference ~/Projects/{project}
+8. For VPS projects: reference the VPS path
+
+GOOD example: "I've been building out the short-form-video project at ~/Projects/short-form-video all week — got the HardCutMontage composition working, added subtitle overlays, and built an asset generator. I'm on a roll. Next I need to polish the duration calculator and test with real video assets. Check the GitHub Project board and update it."
+
+BAD example: "I'm working on short-form-video. Last session I did some work. Continue." — No arc, no momentum, no specifics.
+
+Part 5: TODO Summary (new tasks added + carrying over count)
+
+Part 6: Recently Completed + Roadmap Changes (one line each)
+
+---
+
+Proposed Memory Changes
+
+Only propose if something genuinely new was learned. If nothing: "No memory changes."
+Want me to save these? Yes / No / Edit
+
+---
+
+Rules:
+1. Sessions are research, not output. Never show session log tables.
+2. One roadmap item per project. Build the index first, match by project label.
+3. Never put numbers in roadmap titles or memory proposals.
+4. Everything in Pacific Time.
+5. Continue prompts are messages FROM the user TO a fresh Claude. Conversational, not commands.
+6. VPS services section is always a visual grid with domain, port, project, and health.
+7. Always gather 7 days of data. Argument only controls focus window for continue prompts.
+8. Build per-project arcs before writing continue prompts. The arc makes prompts smart.
+9. Auto-discover VPS services from nginx and repos from filesystem. Mac uses config file.
+10. NEVER re-add a task that already exists in Reminders. Check first, add only new.
+11. Comms (email, iMessage, WhatsApp) scan last 24h. Git/sessions scan 7 days.
+12. If SSH to VPS fails, present Mac-only briefing and note VPS is unreachable.
+13. If a Gmail account fails auth, note it and continue with the others.
