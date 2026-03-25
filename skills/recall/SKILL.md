@@ -150,9 +150,16 @@ Use TWO separate Reminders lists:
 
 Clear any existing uncompleted reminder in this list, then create one new reminder:
 - **name**: Today's date (e.g., "Mar 26 — Morning Brief")
-- **body**: The full briefing text from Phase 5 (inbox summary, services, active tasks, everything)
+- **body**: The full briefing text including:
+  - Inbox summary (unread counts across accounts, action items)
+  - iMessage / WhatsApp status
+  - VPS services dashboard (domain, port, project, health — the full grid)
+  - Mac services status (Docker, dev servers)
+  - Mac disk space + VPS disk space
+  - Active project summaries (both Mac and VPS)
+  - Roadmap changes
 
-This is the overview. User reads it, gets caught up, checks it off.
+This is the complete overview. User taps the reminder on their phone, reads the full brief, gets caught up, checks it off. The brief body should be self-contained — someone reading ONLY this reminder should know the full state of both machines.
 
 ```bash
 osascript -e '
