@@ -86,7 +86,22 @@ gh project item-list 7 --owner thegeshwar --format json --limit 100
 
 ### I. Read Existing Reminders (for deduplication)
 
-Read all uncompleted reminders from "Daily Briefing" list via osascript. Store this list — in Phase 4, do NOT add any task that essentially duplicates an existing uncompleted reminder.
+Read all uncompleted reminders from BOTH "Morning Brief" and "Tasks" lists via osascript. Store the Tasks list — in Phase 4, do NOT add any task that essentially duplicates an existing uncompleted reminder.
+
+```bash
+osascript -e '
+tell application "Reminders"
+    set output to ""
+    if exists list "Tasks" then
+        set theReminders to every reminder of list "Tasks" whose completed is false
+        repeat with r in theReminders
+            set output to output & name of r & " ||| " & body of r & return
+        end repeat
+    end if
+    return output
+end tell
+'
+```
 
 ### J. Read Memory
 
@@ -127,11 +142,86 @@ Project labels: linkedin-outreach=62cf1c92, jobagent=4bf8cd59, qms-agents=48f0a5
 
 ---
 
-## Phase 4: Create TODO in Reminders
+## Phase 4: Create Reminders
 
-Read existing uncompleted reminders from Phase 1I. Do NOT re-add tasks that already exist (even if worded differently). Only add genuinely NEW actionable items.
+Use TWO separate Reminders lists:
 
-Prefix with today's date. Sources: emails needing action, messages needing reply, broken services, project next steps. Max 10-15 NEW items per day.
+### List 1: "Morning Brief" — ONE reminder per day
+
+Clear any existing uncompleted reminder in this list, then create one new reminder:
+- **name**: Today's date (e.g., "Mar 26 — Morning Brief")
+- **body**: The full briefing text from Phase 5 (inbox summary, services, active tasks, everything)
+
+This is the overview. User reads it, gets caught up, checks it off.
+
+```bash
+osascript -e '
+tell application "Reminders"
+    if not (exists list "Morning Brief") then
+        make new list with properties {name:"Morning Brief"}
+    end if
+    -- Clear old uncompleted briefs
+    set oldBriefs to every reminder of list "Morning Brief" whose completed is false
+    repeat with r in oldBriefs
+        delete r
+    end repeat
+    -- Add today brief
+    tell list "Morning Brief"
+        make new reminder with properties {name:"DATE — Morning Brief", body:"FULL_BRIEFING_TEXT"}
+    end tell
+end tell
+'
+```
+
+### List 2: "Tasks" — One reminder per actionable task
+
+Read existing uncompleted reminders first (deduplication). Only add genuinely NEW tasks.
+
+**Categories (use emoji prefix in the name):**
+
+🔥 = Urgent (something is broken, deadline within 48h, security issue)
+💬 = Reply needed (a real person waiting for YOUR response — not group chats, not automated)
+🛠 = Continue working (active project with smart continue prompt in body)
+📅 = Has a deadline (specific date attached)
+
+**What becomes a task:**
+- Broken services or critical errors → 🔥
+- Messages from real people where Thegeshwar is the one who needs to reply → 💬
+- Active projects with session activity in last 72h → 🛠 (continue prompt in body)
+- Anything with a hard deadline → 📅
+
+**What NEVER becomes a task:**
+- "Commit your code" — dev hygiene, not a task
+- "Review bank statement" — bank app handles notifications
+- "Verify SSH key / security alert" — unless genuinely suspicious (new country, unknown device)
+- Automated emails, newsletters, promotions
+- Group chat unreads (WhatsApp groups, etc.)
+- Vague items with no clear action ("ShivYog webinar this week")
+- Anything already resolved in a Claude session today
+
+**🛠 Continue tasks are special:**
+- Name: `🛠 Continue: {project name} — {short description}`
+- Body: The FULL smart continue prompt from Phase 5 Part 4, ready to copy-paste into a Claude session
+- These are the most valuable tasks — they let Thegeshwar tap, read the prompt, paste into Claude, and pick up exactly where he left off
+
+```bash
+osascript -e '
+tell application "Reminders"
+    if not (exists list "Tasks") then
+        make new list with properties {name:"Tasks"}
+    end if
+    tell list "Tasks"
+        make new reminder with properties {name:"EMOJI TASK_NAME", body:"CONTEXT_OR_CONTINUE_PROMPT"}
+    end tell
+end tell
+'
+```
+
+**Deduplication rules:**
+- Read all uncompleted reminders from "Tasks" list before adding
+- If a task essentially matches an existing one (even different wording), skip it
+- 🛠 Continue tasks: UPDATE the body if the continue prompt has changed (project progressed), but don't create a duplicate
+- Max 15 tasks total in the list at any time. If at 15, don't add more — mention overflow in the brief
 
 ---
 
@@ -152,7 +242,10 @@ Determine which tasks get continue prompts:
 - If FOCUS_HOURS set: only tasks with activity in last FOCUS_HOURS hours
 - If empty: most recent task per active project within 72 hours
 
-Active project = In Progress on roadmap AND has git/session activity in last 72 hours.
+Active project = has git/session activity in last 72 hours on EITHER Mac or VPS. Check BOTH:
+- Mac: sessions in ~/.claude/history.jsonl + git activity in ~/Projects/
+- VPS: sessions from SSH + git activity from SSH
+A project doesn't need to be on the roadmap to get a continue prompt — if there's recent session activity, it qualifies. Mac projects (bhavya-mailer, remotion, short-form-video, shivyog-rails) and VPS projects (qms-leader, calldeck, linkedin-outreach, etc.) are BOTH tracked.
 Stalled projects: In Progress but no activity in 72 hours — one-liner, no continue prompt.
 
 For each active task:
@@ -169,14 +262,23 @@ Smart Continue Prompt Construction rules:
 4. Include specific technical details (file paths, what was last touched)
 5. Capture emotional context
 6. End with clear next action + "Check the GitHub Project board and update it."
-7. For Mac projects: reference ~/Projects/{project}
+7. For Mac projects: reference ~/Projects/{project} and note this runs on the Mac (not VPS)
 8. For VPS projects: reference the VPS path
 
 GOOD example: "I've been building out the short-form-video project at ~/Projects/short-form-video all week — got the HardCutMontage composition working, added subtitle overlays, and built an asset generator. I'm on a roll. Next I need to polish the duration calculator and test with real video assets. Check the GitHub Project board and update it."
 
 BAD example: "I'm working on short-form-video. Last session I did some work. Continue." — No arc, no momentum, no specifics.
 
-Part 5: TODO Summary (new tasks added + carrying over count)
+Part 5: Reminders Summary
+
+```
+Morning Brief added to "Morning Brief" list.
+
+Tasks list:
+  New: 🔥 Fix VPS disk space, 🛠 Continue: CallDeck
+  Carrying over: 3 tasks from previous days
+  Total open: 5 tasks
+```
 
 Part 6: Recently Completed + Roadmap Changes (one line each)
 
