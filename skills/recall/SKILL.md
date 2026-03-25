@@ -80,11 +80,11 @@ For each discovered VPS domain, health check with `curl -sL` (follow redirects �
 
 test.dev.thegeshwar.com is the only domain whose port/project may change — everything else has a fixed assignment.
 
-**IMPORTANT: The known service map is the source of truth for port assignments.** The auto-discovery regex is unreliable for certbot-modified nginx configs and often returns wrong ports or 'static' for proxied domains. When presenting the service dashboard:
-1. Start with the known service map above
-2. Use auto-discovery ONLY to find domains NOT in the map
-3. For health checks, always curl the domain directly — that's reliable regardless of nginx parsing
-4. If auto-discovery contradicts the map, trust the map and ignore auto-discovery
+**The known service map IS the service dashboard.** Do not parse nginx configs for port numbers — the regex is broken for certbot configs and returns wrong data. Instead:
+1. Copy the service map table above directly into the briefing as the VPS Services dashboard
+2. Run health checks (curl -sL) for each domain to fill in the health column
+3. If a NEW domain is discovered that's NOT in the map, add it with port "unknown" and flag it
+4. NEVER show a different port than what the map says — if you see conflicting data from auto-discovery, the map wins, period
 
 ### H. Read the Roadmap
 
