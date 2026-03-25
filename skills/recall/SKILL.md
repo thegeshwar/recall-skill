@@ -78,7 +78,13 @@ For each discovered VPS domain, health check with `curl -sL` (follow redirects �
 | portfolio.thegeshwar.com | static | nginx | Static site |
 | snapfinance.thegeshwar.com | static | nginx | Static site |
 
-test.dev.thegeshwar.com is the only domain whose port/project may change — everything else has a fixed assignment. If auto-discovery shows a mismatch with this table, flag it as an issue rather than silently accepting it.
+test.dev.thegeshwar.com is the only domain whose port/project may change — everything else has a fixed assignment.
+
+**IMPORTANT: The known service map is the source of truth for port assignments.** The auto-discovery regex is unreliable for certbot-modified nginx configs and often returns wrong ports or 'static' for proxied domains. When presenting the service dashboard:
+1. Start with the known service map above
+2. Use auto-discovery ONLY to find domains NOT in the map
+3. For health checks, always curl the domain directly — that's reliable regardless of nginx parsing
+4. If auto-discovery contradicts the map, trust the map and ignore auto-discovery
 
 ### H. Read the Roadmap
 
@@ -144,7 +150,22 @@ Project labels: linkedin-outreach=62cf1c92, jobagent=4bf8cd59, qms-agents=48f0a5
 
 ## Phase 4: Create Reminders
 
-Use TWO separate Reminders lists:
+Use TWO separate Reminders lists. **FIRST, ensure both lists exist** before doing anything else:
+
+```bash
+osascript -e '
+tell application "Reminders"
+    if not (exists list "Morning Brief") then
+        make new list with properties {name:"Morning Brief"}
+    end if
+    if not (exists list "Tasks") then
+        make new list with properties {name:"Tasks"}
+    end if
+end tell
+'
+```
+
+Run this BEFORE any other Reminders operations. If it fails or times out, retry once. If it fails again, skip Reminders entirely and note it in the briefing.
 
 ### List 1: "Morning Brief" — ONE reminder per day
 
@@ -194,7 +215,7 @@ Read existing uncompleted reminders first (deduplication). Only add genuinely NE
 **What becomes a task:**
 - Broken services or critical errors → 🔥
 - Messages from real people where Thegeshwar is the one who needs to reply → 💬
-- Active projects with session activity in last 72h → 🛠 (continue prompt in body)
+- Active projects with session activity in last 72h on EITHER Mac OR VPS → 🛠 (continue prompt in body). This includes Mac projects like short-form-video, bhavya-mailer, remotion, revenue-agent — not just VPS projects
 - Anything with a hard deadline → 📅
 
 **What NEVER becomes a task:**
@@ -210,6 +231,7 @@ Read existing uncompleted reminders first (deduplication). Only add genuinely NE
 - Name: `🛠 Continue: {project name} — {short description}`
 - Body: The FULL smart continue prompt from Phase 5 Part 4, ready to copy-paste into a Claude session
 - These are the most valuable tasks — they let Thegeshwar tap, read the prompt, paste into Claude, and pick up exactly where he left off
+- Create one 🛠 reminder for EVERY active project discovered in Phase 2 — Mac AND VPS. If you found 4 VPS projects and 2 Mac projects with recent activity, that's 6 🛠 reminders. Don't skip Mac projects.
 
 ```bash
 osascript -e '
