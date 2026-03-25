@@ -156,16 +156,20 @@ Use TWO separate Reminders lists. **FIRST, ensure both lists exist** before doin
 osascript -e '
 tell application "Reminders"
     if not (exists list "Morning Brief") then
-        make new list with properties {name:"Morning Brief"}
+        tell account "iCloud"
+            make new list with properties {name:"Morning Brief"}
+        end tell
     end if
     if not (exists list "Tasks") then
-        make new list with properties {name:"Tasks"}
+        tell account "iCloud"
+            make new list with properties {name:"Tasks"}
+        end tell
     end if
 end tell
 '
 ```
 
-Run this BEFORE any other Reminders operations. If it fails or times out, retry once. If it fails again, skip Reminders entirely and note it in the briefing.
+Lists MUST be created under the iCloud account (not "On My Mac") so they sync to iPhone. Run this BEFORE any other Reminders operations. If it fails or times out, retry once. If it fails again, skip Reminders entirely and note it in the briefing.
 
 ### List 1: "Morning Brief" — ONE reminder per day
 
