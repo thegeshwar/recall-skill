@@ -60,7 +60,25 @@ Check docker ps and lsof for common dev ports (3000, 3001, 4000, 5000, 5432, 567
 
 ### G. VPS Full Report (via SSH)
 
-SSH into oracle and gather: session history (7 days), service status (systemctl, docker ps), nginx domain discovery, git activity (7 days), disk usage. For each discovered VPS domain, health check with curl.
+SSH into oracle and gather: session history (7 days), service status (systemctl, docker ps), nginx domain discovery, git activity (7 days), disk usage.
+
+For each discovered VPS domain, health check with `curl -sL` (follow redirects — a 301 that leads to a 502 is DOWN, not healthy). Always check the FINAL response code.
+
+**Known service map (use as reference — auto-discovery should confirm, not contradict):**
+
+| Domain | Port | Project | Notes |
+|--------|------|---------|-------|
+| qmsleader.com | 3000 | qms-leader (prod) | PRODUCTION — never touch without permission |
+| qms.thegeshwar.com | 3001 | qms-leader (dev) | Dev environment, free to modify |
+| qmsagents.ai | 3002 | qms-agents | Marketing site, systemd service |
+| calldeck.thegeshwar.com | 3003 | calldeck | Cold calling terminal |
+| test.dev.thegeshwar.com | 3003 | calldeck (staging) | Staging — port/project may change |
+| outreach.dev.thegeshwar.com | 7681 | linkedin-outreach | ttyd web terminal |
+| n8n.thegeshwar.com | 5678 | n8n | Workflow automation |
+| portfolio.thegeshwar.com | static | nginx | Static site |
+| snapfinance.thegeshwar.com | static | nginx | Static site |
+
+test.dev.thegeshwar.com is the only domain whose port/project may change — everything else has a fixed assignment. If auto-discovery shows a mismatch with this table, flag it as an issue rather than silently accepting it.
 
 ### H. Read the Roadmap
 
