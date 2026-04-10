@@ -1,21 +1,24 @@
 ---
 name: recall
-description: "Morning briefing with Gmail (4 accounts), iMessage, WhatsApp, auto-discovered services on BOTH Mac and VPS, 7-day session context from both machines, roadmap sync, smart continue prompts, and TODO list pushed to macOS Reminders. Use this skill whenever the user runs /recall, asks for a morning briefing, wants to know what they worked on recently, asks 'what was I doing', 'what do I need to do today', 'catch me up', or wants to start their day. Also triggers for /start-day. Usage: /recall [hours] — focus window for continue prompts (default: most recent per active project). Always loads 7 days of context."
+description: "Morning briefing and ADHD project management system. Scans Gmail (4 accounts), iMessage, WhatsApp, Mac + VPS services, 7-day session/git history, and auto-ranks projects by activity. Pushes a dashboard notification + task list with named session commands to macOS Reminders. Use whenever the user runs /recall, asks for a morning briefing, 'what was I doing', 'catch me up', 'what do I need to do', or wants to start their day. Also triggers for /start-day. Usage: /recall [hours]"
 user_invocable: true
 ---
 
-# Recall — Mac + VPS Morning Briefing
+# Recall — Morning Briefing + ADHD Project Management
 
-You're giving Thegeshwar his morning briefing. Tell him what needs attention across his Mac AND VPS, where he left off, and how to continue.
+You're Thegeshwar's external executive function. Your job: gather everything, auto-rank his projects by actual activity, build a clear dashboard, and push it to his phone so he can start his day knowing exactly where everything stands.
 
-The user is non-technical. Keep it clear, focused, and actionable.
+The user has ADHD. He has 18+ projects. Things slip through cracks. This system prevents that by:
+- Auto-ranking projects by recency (no manual management, no asking him to choose)
+- Showing the top 3 as "focus" with real status + named session commands + continue prompts
+- Keeping everything else visible but quiet
+- Rebuilding the full task list fresh every run (no stale items)
 
-**Everything must be in Pacific Time (PST/PDT).** Use `TZ=America/Los_Angeles date +%Y-%m-%d` for today's date and `TZ=America/Los_Angeles date` for times.
+**Everything in Pacific Time.** Use `TZ=America/Los_Angeles date +%Y-%m-%d` for today's date.
 
 **Argument handling:**
-- `$ARGUMENTS` contains an optional focus window in hours (e.g., `/recall 6`)
-- Parse into `FOCUS_HOURS`. If empty or not a number, leave empty (triggers "most recent per active project" mode)
-- Session/git data gathering ALWAYS uses a **7-day window** regardless of the argument
+- `$ARGUMENTS` = optional focus window in hours (e.g., `/recall 6`)
+- Session/git gathering ALWAYS uses a **7-day window**
 - The argument only controls which tasks get continue prompts in Phase 5
 
 ---
@@ -24,116 +27,128 @@ The user is non-technical. Keep it clear, focused, and actionable.
 
 ### A. Gmail — All Inboxes
 
-Use the Google Workspace MCP to scan each account:
-
 search_gmail_messages(query="is:unread newer_than:1d", user_google_email="thegeshwar@gmail.com", page_size=10)
 search_gmail_messages(query="is:unread newer_than:1d", user_google_email="thegeshwar.sivamoorthy@gmail.com", page_size=10)
 search_gmail_messages(query="is:unread newer_than:1d", user_google_email="thejeshwa@gmail.com", page_size=10)
 search_gmail_messages(query="is:unread newer_than:1d", user_google_email="sivamoorthythegeshwar@gmail.com", page_size=10)
 
-Then batch-read the top 15 most important threads using get_gmail_messages_content_batch.
-
-Categorize each as: Action Required, FYI, or Skip.
-Focus on: real people, calendar invites, bills, legal/immigration, clients, projects. Skip newsletters.
+Batch-read the top 15 important threads. Categorize: Action Required, FYI, or Skip. Focus on real people, calendar invites, bills, legal/immigration, clients. Skip newsletters.
 
 ### B. iMessage — Recent Conversations
 
-sqlite3 ~/Library/Messages/chat.db "SELECT h.id as contact, m.text, datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as sent_at, m.is_from_me FROM message m JOIN handle h ON m.handle_id = h.ROWID WHERE m.date > (strftime('%s', 'now', '-1 day') - 978307200) * 1000000000 ORDER BY m.date DESC LIMIT 50;"
+```bash
+~/scripts/recall/imessage-scan.sh
+```
 
-Identify conversations needing a reply (last message is from someone else).
+This wraps `imessage-exporter` (brew installed) and outputs a JSON array of conversations with activity in the last 24h. **DO NOT use raw sqlite on chat.db** — the `text` column is NULL for ~16% of messages on macOS Ventura+ (text moved to `attributedBody` binary blob), and there's no contact-name resolution. The wrapper handles both.
+
+Each entry: `{contact, last_msg, last_time, last_from_me, needs_reply, msg_count_24h}`. Contacts are real names (auto-resolved from Contacts.app's AddressBook DB by imessage-exporter — no permission prompts needed).
+
+Sorted with `needs_reply: true` first. Use those for the 💬 Reply task reminders. **Never invent contact names or pull them from MEMORY.md** — only use what this script returns. If `contact` looks like a phone number, that person isn't in Contacts; show the number as-is.
 
 ### C. WhatsApp — Check for Unreads
 
-Open WhatsApp via osascript, then use accessibility to scan for unread badges. If not logged in, note it and skip.
+Open WhatsApp via osascript, scan for unread badges. If not logged in, skip.
 
 ### D. Mac Session History (7 days)
 
 Read ~/.claude/history.jsonl, filter to last 7 days, deduplicate by sessionId.
 
-### E. Mac Git Activity
+### E. Project Registry + Git Activity
 
-For each project in ~/.claude/recall-config.json active_projects list, check git log --since="7 days ago" and git status.
+Read `~/.claude/project-registry.json`. For EVERY project (not just focus ones), check:
+- `git log --since="7 days ago"` — recent commits
+- `git status` — uncommitted work
+- Update `last_activity` in the registry based on findings
 
 ### F. Mac Services
 
-Check docker ps and lsof for common dev ports (3000, 3001, 4000, 5000, 5432, 5678, 8000, 8080).
+Check `docker ps` and `lsof` for common dev ports (3000, 3001, 4000, 5000, 5432, 5678, 8000, 8080).
 
 ### G. VPS Full Report (via SSH)
 
-SSH into oracle and gather: session history (7 days), service status (systemctl, docker ps), nginx domain discovery, git activity (7 days), disk usage.
+SSH into oracle. Gather: session history (7 days), service status (systemctl, docker ps), git activity for all VPS projects, disk usage.
 
-For each discovered VPS domain, health check with `curl -sL` (follow redirects — a 301 that leads to a 502 is DOWN, not healthy). Always check the FINAL response code.
+Health check every domain with `curl -sL` (follow redirects — check FINAL response code).
 
-**Known service map (use as reference — auto-discovery should confirm, not contradict):**
+**Known service map (source of truth — auto-discovery must not contradict):**
 
 | Domain | Port | Project | Notes |
 |--------|------|---------|-------|
-| qmsleader.com | 3000 | qms-leader (prod) | PRODUCTION — never touch without permission |
-| qms.thegeshwar.com | 3001 | qms-leader (dev) | Dev environment, free to modify |
-| qmsagents.ai | 3002 | qms-agents | Marketing site, systemd service |
-| calldeck.thegeshwar.com | 3003 | calldeck | Cold calling terminal |
-| test.dev.thegeshwar.com | 3003 | calldeck (staging) | Staging — port/project may change |
-| outreach.dev.thegeshwar.com | 7681 | linkedin-outreach | ttyd web terminal |
-| n8n.thegeshwar.com | 5678 | n8n | Workflow automation |
-| portfolio.thegeshwar.com | static | nginx | Static site |
-| snapfinance.thegeshwar.com | static | nginx | Static site |
+| qmsleader.com | 3000 | qms-leader (prod) | PRODUCTION |
+| qms.thegeshwar.com | 3001 | qms-leader (dev) | Dev |
+| qmsagents.ai | 3002 | qms-agents | Marketing |
+| calldeck.thegeshwar.com | 3003 | calldeck | Cold calling |
+| test.dev.thegeshwar.com | 3003 | calldeck (staging) | Staging |
+| outreach.dev.thegeshwar.com | 7681 | linkedin-outreach | ttyd |
+| n8n.thegeshwar.com | 5678 | n8n | Workflows |
+| portfolio.thegeshwar.com | static | nginx | Static |
+| snapfinance.thegeshwar.com | static | nginx | Static |
 
-test.dev.thegeshwar.com is the only domain whose port/project may change — everything else has a fixed assignment.
-
-**The known service map IS the service dashboard.** Do not parse nginx configs for port numbers — the regex is broken for certbot configs and returns wrong data. Instead:
-1. Copy the service map table above directly into the briefing as the VPS Services dashboard
-2. Run health checks (curl -sL) for each domain to fill in the health column
-3. If a NEW domain is discovered that's NOT in the map, add it with port "unknown" and flag it
-4. NEVER show a different port than what the map says — if you see conflicting data from auto-discovery, the map wins, period
-
-### H. Read the Roadmap
-
-gh project item-list 7 --owner thegeshwar --format json --limit 100
-
-### I. Read Existing Reminders (for deduplication)
-
-Read all uncompleted reminders from BOTH "Morning Brief" and "Tasks" lists via osascript. Store the Tasks list — in Phase 4, do NOT add any task that essentially duplicates an existing uncompleted reminder.
+### H. Roadmap
 
 ```bash
-osascript -e '
-tell application "Reminders"
-    set output to ""
-    if exists list "Tasks" then
-        set theReminders to every reminder of list "Tasks" whose completed is false
-        repeat with r in theReminders
-            set output to output & name of r & " ||| " & body of r & return
-        end repeat
-    end if
-    return output
-end tell
-'
+gh project item-list 7 --owner thegeshwar --format json --limit 100
 ```
 
-### J. Read Memory
+### I. Read Memory
 
 Read ~/.claude/projects/-Users-thegeshwar/memory/MEMORY.md and referenced files.
 
 ---
 
-## Phase 2: Read Sessions (build per-project arcs)
+## Phase 2: Auto-Rank Projects
 
-Sessions are research material — read them to understand what happened, but don't reproduce them.
+The user does not pick focus projects — the system ranks them automatically based on actual activity.
 
-Read up to 15 most recent sessions from BOTH Mac and VPS. For each, read head -50 and tail -30 of the session JSONL.
+### Step 1: Score every project
 
-Build a per-project arc for EACH active project (Mac and VPS):
+For each project in the registry, calculate a recency score:
+- Use `last_activity` date from git findings in Phase 1E
+- If a project has session activity (from Phase 1D or VPS sessions), use the most recent of git or session date
+- Score = days since last activity (lower = more recent = higher rank)
+
+### Step 2: Assign statuses
+
+Sort all projects by recency score (most recent first).
+- **Top 3** → `status: "focus"`
+- **Projects 4+** with activity in last 14 days → `status: "active"`
+- **Projects with no activity in 14+ days** → `status: "paused"`
+
+### Step 3: Write updated registry
+
+Write the updated `~/.claude/project-registry.json` with new statuses and dates.
+
+### Step 4: Detect transitions
+
+Note any projects that changed status since last run:
+- Newly promoted to focus → user started working on it
+- Dropped from focus → user hasn't touched it
+- Include transitions in the briefing
+
+---
+
+## Phase 2B: Read Sessions (build arcs for focus projects)
+
+Sessions are research material — read them to understand context, don't reproduce them.
+
+Read up to 15 most recent sessions from BOTH Mac and VPS. For each, read head -50 and tail -30.
+
+Build a per-project arc for each **focus** project:
 - Timeline: what happened each day over 7 days
 - Trajectory: ramping up, winding down, or stuck?
-- Latest state: what was the user doing in the most recent session?
-- User's intent: what are they trying to achieve?
-- Blockers/frustrations: anything recurring?
+- Latest state: what was the user doing most recently?
+- What they're trying to achieve
+- Blockers/frustrations
+
+Also build a lighter 1-line status for each **active** project.
 
 ---
 
 ## Phase 3: Update the Roadmap
 
 Step 1: Build index of existing items from Phase 1H
-Step 2: Match each session (Mac AND VPS) to existing items by project label. Almost never create new items.
+Step 2: Match sessions to existing items by project label
 Step 3: Apply updates (extend dates, change statuses)
 Step 4: Check for duplicates
 
@@ -148,172 +163,217 @@ Project labels: linkedin-outreach=62cf1c92, jobagent=4bf8cd59, qms-agents=48f0a5
 
 ---
 
-## Phase 4: Create Reminders
+## Phase 4: Write Reminder Data to JSON
 
-Use TWO separate Reminders lists. **FIRST, ensure both lists exist** before doing anything else:
+**DO NOT run osascript for Reminders.** The Claude CLI binary changes path on every update, which breaks macOS TCC permissions. Instead, write all reminder data to `/tmp/recall-reminders.json`. The wrapper script (`daily-recall.sh`) handles actual Reminders creation via `/bin/bash`, which has permanent TCC approval.
 
-```bash
-osascript -e '
-tell application "Reminders"
-    if not (exists list "Morning Brief") then
-        tell account "iCloud"
-            make new list with properties {name:"Morning Brief"}
-        end tell
-    end if
-    if not (exists list "Tasks") then
-        tell account "iCloud"
-            make new list with properties {name:"Tasks"}
-        end tell
-    end if
-end tell
-'
+**Recall owns exactly two lists: "Morning Brief" and "Tasks". Never touch any other list.**
+
+Write the following JSON to `/tmp/recall-reminders.json`:
+
+```json
+{
+  "morning_brief": {
+    "name": "DATE — Morning Brief",
+    "body": "DASHBOARD_TEXT"
+  },
+  "tasks": [
+    {"name": "TASK_NAME", "body": "TASK_BODY", "buzz": true},
+    ...
+  ]
+}
 ```
 
-Lists MUST be created under the iCloud account (not "On My Mac") so they sync to iPhone. Run this BEFORE any other Reminders operations. If it fails or times out, retry once. If it fails again, skip Reminders entirely and note it in the briefing.
+### Morning Brief (the `morning_brief` field)
 
-### List 1: "Morning Brief" — ONE reminder per day
+One entry. This is the ONE notification that hits the phone (buzz: always true, handled by the script).
 
-Clear any existing uncompleted reminder in this list, then create one new reminder:
-- **name**: Today's date (e.g., "Mar 26 — Morning Brief")
-- **body**: The full briefing text including:
-  - Inbox summary (unread counts across accounts, action items)
-  - iMessage / WhatsApp status
-  - VPS services dashboard (domain, port, project, health — the full grid)
-  - Mac services status (Docker, dev servers)
-  - Mac disk space + VPS disk space
-  - Active project summaries (both Mac and VPS)
-  - Roadmap changes
+**Body structure:**
 
-This is the complete overview. User taps the reminder on their phone, reads the full brief, gets caught up, checks it off. The brief body should be self-contained — someone reading ONLY this reminder should know the full state of both machines.
+```
+FOCUS (your top 3 right now)
+1. {name} ({Mac/VPS}) — {real 1-line status from session/git data}
+   Start: claude --name "{shortname}"
+2. {name} ({Mac/VPS}) — {real 1-line status}
+   Start: claude --name "{shortname}"
+3. {name} ({Mac/VPS}) — {real 1-line status}
+   Start: claude --name "{shortname}"
 
-```bash
-osascript -e '
-tell application "Reminders"
-    if not (exists list "Morning Brief") then
-        make new list with properties {name:"Morning Brief"}
-    end if
-    -- Clear old uncompleted briefs
-    set oldBriefs to every reminder of list "Morning Brief" whose completed is false
-    repeat with r in oldBriefs
-        delete r
-    end repeat
-    -- Add today brief
-    tell list "Morning Brief"
-        make new reminder with properties {name:"DATE — Morning Brief", body:"FULL_BRIEFING_TEXT"}
-    end tell
-end tell
-'
+ACTIVE (touched in last 14 days)
+• {name} — {1-line status}
+• {name} — {1-line status}
+
+PAUSED (14+ days untouched)
+• {name} — last {date} ({N} days ago)
+• {name} — last {date} ({N} days ago)
+
+COMMS
+• Gmail: {X} unread ({Y} action required)
+• iMessage: {who needs reply, or "all clear"}
+• WhatsApp: {status}
+
+SERVICES
+{domain} | {health ✓/✗}
+...
+
+SYSTEM
+Mac disk: {X}% | VPS disk: {X}%
 ```
 
-### List 2: "Tasks" — One reminder per actionable task
+The 1-line status for each focus project must be REAL — pulled from actual git commits or session data. Not generic descriptions. Examples:
+- GOOD: "BiRefNet silhouettes done, 3D hero mesh demos deployed to test.dev"
+- GOOD: "auth 401 blocking submissions, 124 successful before failure"
+- BAD: "In progress" / "Working on features" / "Active development"
 
-Read existing uncompleted reminders first (deduplication). Only add genuinely NEW tasks.
+### Task reminders (the `tasks` array)
 
-**Categories (use emoji prefix in the name):**
+Each task is an object with `name`, `body`, and `buzz` (boolean — whether it should send a notification).
 
-🔥 = Urgent (something is broken, deadline within 48h, security issue)
-💬 = Reply needed (a real person waiting for YOUR response — not group chats, not automated)
-🛠 = Continue working (active project with smart continue prompt in body)
-📅 = Has a deadline (specific date attached)
+**Creation order** (so they appear correctly in list):
+1. 🔥 Urgent (if any) — `buzz: true`
+2. 💬 Reply needed (if any) — `buzz: true`
+3. 🎯 Focus projects (top 3, with full session kit) — `buzz: false`
+4. 🛠 Active projects (with start command) — `buzz: false`
+5. 💤 Paused projects — `buzz: false`
 
-**What becomes a task:**
-- Broken services or critical errors → 🔥
-- Messages from real people where Thegeshwar is the one who needs to reply → 💬
-- Active projects with session activity in last 72h on EITHER Mac OR VPS → 🛠 (continue prompt in body). This includes Mac projects like short-form-video, bhavya-mailer, remotion, revenue-agent — not just VPS projects
-- Anything with a hard deadline → 📅
+**Focus projects (top 3) — one-paste session start with continue prompt baked in:**
 
-**What NEVER becomes a task:**
-- "Commit your code" — dev hygiene, not a task
-- "Review bank statement" — bank app handles notifications
-- "Verify SSH key / security alert" — unless genuinely suspicious (new country, unknown device)
-- Automated emails, newsletters, promotions
-- Group chat unreads (WhatsApp groups, etc.)
-- Vague items with no clear action ("ShivYog webinar this week")
-- Anything already resolved in a Claude session today
+Task name: `🎯 {project name} — {short status}`
 
-**🛠 Continue tasks are special:**
-- Name: `🛠 Continue: {project name} — {short description}`
-- Body: The FULL smart continue prompt from Phase 5 Part 4, ready to copy-paste into a Claude session
-- These are the most valuable tasks — they let Thegeshwar tap, read the prompt, paste into Claude, and pick up exactly where he left off
-- Create one 🛠 reminder for EVERY active project discovered in Phase 2 — Mac AND VPS. If you found 4 VPS projects and 2 Mac projects with recent activity, that's 6 🛠 reminders. Don't skip Mac projects.
+Task body — the start command IS the continue prompt (one copy-paste launches a named session with the prompt as the first message):
 
-```bash
-osascript -e '
-tell application "Reminders"
-    if not (exists list "Tasks") then
-        make new list with properties {name:"Tasks"}
-    end if
-    tell list "Tasks"
-        make new reminder with properties {name:"EMOJI TASK_NAME", body:"CONTEXT_OR_CONTINUE_PROMPT"}
-    end tell
-end tell
-'
+```
+claude --name "{shortname}" "{Full continue prompt — first person, casual, with arc and specifics}"
+
+Resume: claude --resume "{shortname}"
 ```
 
-**Deduplication rules:**
-- Read all uncompleted reminders from "Tasks" list before adding
-- If a task essentially matches an existing one (even different wording), skip it
-- 🛠 Continue tasks: UPDATE the body if the continue prompt has changed (project progressed), but don't create a duplicate
-- Max 15 tasks total in the list at any time. If at 15, don't add more — mention overflow in the brief
+The `claude --name "{shortname}" "{prompt}"` format starts a named interactive session and sends the continue prompt as the first message automatically. The user copies ONE line, pastes it in the terminal, and they're working. The resume command is on a separate line below for when the terminal crashes.
+
+**Session naming rules:**
+- Use a short, memorable, lowercase name: `nadhirah`, `infographic`, `jobagent`, `calldeck`, `remoteflow`, etc.
+- Same name every day — no dates. Tomorrow's run creates fresh tasks with the same names.
+- Derive from the project's `name` field, shortened to one word if possible.
+- `--name` starts a fresh named interactive session. `--resume` reconnects if the terminal dies.
+
+**The workflow this enables:**
+1. User opens Reminders on phone, taps a 🎯 focus project
+2. Opens Termius (or any terminal), copies the first line of the body
+3. Pastes it — session starts with name AND continue prompt in one shot
+4. Terminal dies (network issues, Termius crash)? Copies the `claude --resume "..."` line — back in same session
+5. Next morning: recall wipes everything, creates fresh tasks with the same session names
+
+**Active projects (4-14 days) — one-paste start with brief context:**
+
+Task name: `🛠 {project name} — {1-line status}`
+
+Task body:
+```
+claude --name "{shortname}" "{Brief context — 1-2 sentences from git/session data. Working on this will auto-promote it to focus.}"
+
+Resume: claude --resume "{shortname}"
+```
+
+`buzz: false`
+
+**Paused projects (14+ days) — gentle visibility:**
+
+Task name: `💤 {project name} — {N} days`
+
+Task body: Last known state in 1 line.
+
+`buzz: false`
+
+### Writing the JSON file
+
+Use a single bash command to write the JSON. Use `jq` or `cat` with a heredoc. Example:
+
+```bash
+cat > /tmp/recall-reminders.json << 'REMINDERS_EOF'
+{
+  "morning_brief": {
+    "name": "2026-04-10 — Morning Brief",
+    "body": "FOCUS (your top 3)..."
+  },
+  "tasks": [
+    {"name": "🎯 calldeck — auth fix deployed", "body": "claude --name \"calldeck\" \"...\"", "buzz": false}
+  ]
+}
+REMINDERS_EOF
+```
+
+**Important:** Ensure valid JSON. Escape quotes and newlines properly in string values. Use `\n` for newlines within body text.
 
 ---
 
 ## Phase 5: Present the Briefing
 
-Keep it compact (~60 lines max).
+Keep it compact (~80 lines max).
 
-Part 1: Communications (inbox summary, action required emails, iMessage, WhatsApp)
+### Part 1: Communications
+Inbox summary, action required emails, iMessage, WhatsApp.
 
-Part 2: VPS Services (auto-discovered dashboard grid with domain, port, project, health check mark or X)
-Domain filtering: When multiple domains share same port, show only primary domain.
+### Part 2: Focus Projects (your top 3)
 
-Part 3: Mac Services (Docker containers, dev servers)
-
-Part 4: Active Tasks with Smart Continue Prompts
-
-Determine which tasks get continue prompts:
-- If FOCUS_HOURS set: only tasks with activity in last FOCUS_HOURS hours
-- If empty: most recent task per active project within 72 hours
-
-Active project = has git/session activity in last 72 hours on EITHER Mac or VPS. Check BOTH:
-- Mac: sessions in ~/.claude/history.jsonl + git activity in ~/Projects/
-- VPS: sessions from SSH + git activity from SSH
-A project doesn't need to be on the roadmap to get a continue prompt — if there's recent session activity, it qualifies. Mac projects (bhavya-mailer, remotion, short-form-video, shivyog-rails) and VPS projects (qms-leader, calldeck, linkedin-outreach, etc.) are BOTH tracked.
-Stalled projects: In Progress but no activity in 72 hours — one-liner, no continue prompt.
-
-For each active task:
-
-{n}. {Task Name} ({project} — {Mac/VPS})
-> {2-3 sentence summary. Plain language.}
-> To continue:
-> {Smart continue prompt — first person, casual, captures the journey}
-
-Smart Continue Prompt Construction rules:
-1. Use the per-project arc from Phase 2
-2. Identify trajectory (ramping up, stuck, wrapping up)
-3. Write in first person, casually — sound like the user
-4. Include specific technical details (file paths, what was last touched)
-5. Capture emotional context
-6. End with clear next action + "Check the GitHub Project board and update it."
-7. For Mac projects: reference ~/Projects/{project} and note this runs on the Mac (not VPS)
-8. For VPS projects: reference the VPS path
-
-GOOD example: "I've been building out the short-form-video project at ~/Projects/short-form-video all week — got the HardCutMontage composition working, added subtitle overlays, and built an asset generator. I'm on a roll. Next I need to polish the duration calculator and test with real video assets. Check the GitHub Project board and update it."
-
-BAD example: "I'm working on short-form-video. Last session I did some work. Continue." — No arc, no momentum, no specifics.
-
-Part 5: Reminders Summary
+For each focus project, show the session commands and continue prompt:
 
 ```
-Morning Brief added to "Morning Brief" list.
-
-Tasks list:
-  New: 🔥 Fix VPS disk space, 🛠 Continue: CallDeck
-  Carrying over: 3 tasks from previous days
-  Total open: 5 tasks
+1. {Project Name} ({Mac/VPS})
+   Status: {2-3 sentence real status from session data}
+   Start: claude --name "{shortname}"
+   Resume: claude --resume "{shortname}"
+   
+   To continue:
+   "{Full continue prompt — first person, casual, captures the journey}"
 ```
 
-Part 6: Recently Completed + Roadmap Changes (one line each)
+**Continue Prompt Construction Rules:**
+
+The continue prompt is the most valuable output of recall. It's a message FROM the user TO a fresh Claude session. It must:
+
+1. Use the per-project arc from Phase 2B — what happened over the last few days, not just the last commit
+2. Sound like the user talking casually ("I've been working on...", "I got stuck on...", "Next I need to...")
+3. Include specific technical details: file paths, function names, what was last modified, error messages
+4. Capture the trajectory: is this ramping up, stuck, or almost done?
+5. End with a clear next action + "Check the GitHub Project board and update it."
+6. Reference the actual project path from the registry
+
+GOOD: "I've been working on Nadhirah's dance portfolio at ~/nadhirah-portfolio — switched from ISNet to BiRefNet_lite for silhouette extraction because ISNet had a leg-merge artifact from downsampling. Reprocessed all 1920 frames via PyTorch+MPS with threshold bumped to 200. The DanceSection multi-span edge-detect fix is deployed to test.dev. For the hero section, particles were unrecognizable so I built 3 Three.js mesh-frag demos (marble+gold shader, shape cycling) at test.dev.thegeshwar.com/3d-demos/. Next: pick the best 3D approach and integrate the silhouette frames into DanceSection.tsx. Check the GitHub Project board and update it."
+
+BAD: "I'm working on nadhirah-portfolio. Continue the silhouette work." — No arc, no specifics, useless.
+
+### Part 3: Active Projects (brief)
+One line each with start command.
+
+### Part 4: Paused Projects
+List with last-touched dates.
+
+### Part 5: VPS Services
+Dashboard grid: domain, port, project, health.
+
+### Part 6: System
+Mac services, disk space, VPS disk space.
+
+### Part 7: Reminders Summary
+
+```
+📱 Reminder data written to /tmp/recall-reminders.json
+   (daily-recall.sh will create reminders after this run completes)
+
+Tasks prepared:
+  🎯 3 focus projects (with session commands + continue prompts)
+  🛠 N active projects (with start commands)
+  💤 N paused projects
+  🔥 N urgent (if any — these will buzz)
+  💬 N replies needed (if any — these will buzz)
+```
+
+### Part 8: Transitions
+If any projects changed rank since last run, note it:
+```
+↑ calldeck promoted to focus (you worked on it yesterday)
+↓ jobagent dropped to active (no activity in 4 days)
+```
 
 ---
 
@@ -324,17 +384,21 @@ Want me to save these? Yes / No / Edit
 
 ---
 
-Rules:
+## Rules
+
 1. Sessions are research, not output. Never show session log tables.
-2. One roadmap item per project. Build the index first, match by project label.
-3. Never put numbers in roadmap titles or memory proposals.
-4. Everything in Pacific Time.
-5. Continue prompts are messages FROM the user TO a fresh Claude. Conversational, not commands.
-6. VPS services section is always a visual grid with domain, port, project, and health.
-7. Always gather 7 days of data. Argument only controls focus window for continue prompts.
-8. Build per-project arcs before writing continue prompts. The arc makes prompts smart.
-9. Auto-discover VPS services from nginx and repos from filesystem. Mac uses config file.
-10. NEVER re-add a task that already exists in Reminders. Check first, add only new.
-11. Comms (email, iMessage, WhatsApp) scan last 24h. Git/sessions scan 7 days.
+2. Everything in Pacific Time.
+3. **Auto-rank, don't ask.** The user never picks focus projects. The system ranks by recency. Top 3 = focus. Period.
+4. **Wipe then rebuild.** Every run deletes all uncompleted reminders from "Morning Brief" and "Tasks", then creates fresh ones.
+5. **Only Morning Brief, 🔥, and 💬 buzz.** Everything else has no `remind me date`. This prevents notification overload.
+6. **Recall only touches "Morning Brief" and "Tasks" lists.** Never touch Grocery or any other list.
+7. **Real statuses only.** Every project's status line must come from actual git/session data. Generic descriptions like "in progress" are forbidden.
+8. **Continue prompts need arcs.** Read sessions, understand the journey, write prompts that capture momentum and specifics. A shallow prompt is worse than no prompt.
+9. **Every project appears somewhere.** Focus (top 3), active (14 days), or paused (14+ days). Nothing is left out.
+10. **The registry auto-updates every run.** New repos get added, dates get refreshed, statuses get recalculated. No manual management.
+11. **Named sessions.** Every focus project gets `claude --name "{shortname}"` and `claude --resume "{shortname}"` commands. Same short names every day (no dates). This lets the user resume after terminal crashes.
 12. If SSH to VPS fails, present Mac-only briefing and note VPS is unreachable.
-13. If a Gmail account fails auth, note it and continue with the others.
+13. If a Gmail account fails auth, note it and continue with others.
+14. One roadmap item per project. Build index first, match by project label.
+15. Comms scan last 24h. Git/sessions scan 7 days.
+16. The service map table is the source of truth for VPS domains/ports. Never show different ports than the map.
